@@ -75,6 +75,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let charmap = charmap::read_charmap(charmap)?;
 
+            //println!("{}", charmap.decode_map.get(&0x01DE).unwrap());
+
             decode::decode_archives(&charmap, source, destination)
         }
         Commands::Encode { .. } => {

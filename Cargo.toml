@@ -7,4 +7,6 @@ description = "A text archive decoder and encoder for the generation IV Pokémon
 [dependencies]
 byteorder = "1.5.0"
 clap = { version="4.5.53", features= ["derive"] }
-quick-xml = { version = "0.38.4", features = ["serialize"] }
+serde_derive = "1.0"
+serde = "1.0"
+serde-xml-rs = "0.4"

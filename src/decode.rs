@@ -68,10 +68,12 @@ pub fn decode_archive(charmap: &charmap::Charmap, archive_file: &Vec<u8>) -> Res
     // Read u16 message count (2 bytes)
     let message_count = archive.read_u16::<LittleEndian>()?;
 
-    let mut lines = Vec::with_capacity(message_count as usize);
+    let mut lines = Vec::with_capacity( (message_count as usize) * std::mem::size_of::<String>());
 
     // Read u16 key (2 bytes)
     let key = archive.read_u16::<LittleEndian>()?;
+
+    println!("Message count: {}, Key: 0x{:04X}", message_count, key);
 
     // Read message table entries
     let mut message_table = Vec::new();
@@ -79,7 +81,11 @@ pub fn decode_archive(charmap: &charmap::Charmap, archive_file: &Vec<u8>) -> Res
         let mut offset = archive.read_u32::<LittleEndian>()?;
         let mut length = archive.read_u32::<LittleEndian>()?;
 
-        let mut local_key: u32 = ((765 * (i+1) * key) & 0xFFFF).into();
+        let mut local_key: u32 = 765;
+        local_key = local_key.wrapping_mul((i+1) as u32);
+        local_key = local_key.wrapping_mul(key as u32);
+        local_key &= 0xFFFF;
+
         local_key |= local_key << 16;
         offset ^= local_key;
         length ^= local_key;
@@ -92,7 +98,7 @@ pub fn decode_archive(charmap: &charmap::Charmap, archive_file: &Vec<u8>) -> Res
         
         // Ensure offset and length are within bounds (length is in u16 units)
         if (entry.offset as usize + (entry.length * 2) as usize) > archive.get_ref().len() {
-            return Err("Invalid message entry offset/length".into());
+            return Err(format!("Invalid message entry offset/length: offset={}, length={}", entry.offset, entry.length).into());
         }
 
         archive.set_position(entry.offset as u64);
@@ -100,7 +106,7 @@ pub fn decode_archive(charmap: &charmap::Charmap, archive_file: &Vec<u8>) -> Res
         encrypted_message
             .iter_mut()
             .for_each(|c| *c = archive.read_u16::<LittleEndian>().unwrap());
-        let decrypted_message = decrypt_message(&encrypted_message, i as u16);
+        let decrypted_message = decrypt_message(&encrypted_message, (i + 1) as u16);
 
         let message_string = decode_message_to_string(&charmap, &decrypted_message);
         lines.push(message_string);
@@ -112,12 +118,13 @@ pub fn decode_archive(charmap: &charmap::Charmap, archive_file: &Vec<u8>) -> Res
 
 pub fn decrypt_message(encrypted_message: &Vec<u16>, index: u16) -> Vec<u16> {
     let mut decrypted_message = Vec::with_capacity(encrypted_message.len());
-    let mut current_key: u16 = (index as u32 * 596947u32) as u16;
+    let mut current_key: u16 = (index as u32).wrapping_mul(596947) as u16;
 
     for &enc_char in encrypted_message {
         let dec_char = enc_char ^ current_key;
         decrypted_message.push(dec_char);
-        current_key = (current_key + 18749) & 0xFFFF;
+        current_key = current_key.wrapping_add(18749);
+        current_key &= 0xFFFF;
     }
 
     decrypted_message
@@ -149,7 +156,7 @@ pub fn decode_message_to_string(charmap: &charmap::Charmap, decrypted_message: &
             i += to_skip;
         }
         // Regular character
-        else if charmap.encode_map.contains_key(&code.to_string()) {
+        else if charmap.decode_map.contains_key(&code) {
             let character = charmap.decode_map.get(&code).unwrap();
             result.push_str(character);
             i += 1;
