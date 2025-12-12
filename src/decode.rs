@@ -1,5 +1,5 @@
-use std::{f64::consts::E, io::{Cursor, Read}};
-use byteorder::{ReadBytesExt, LittleEndian, BigEndian};
+use std::io::Cursor;
+use byteorder::{ReadBytesExt, LittleEndian};
 
 use crate::charmap;
 
@@ -128,7 +128,7 @@ pub fn decode_message_to_string(charmap: &charmap::Charmap, decrypted_message: &
     let mut i = 0;
     let mut result = String::new();
 
-    while (i < decrypted_message.len()) {
+    while i < decrypted_message.len() {
 
         let code = decrypted_message[i];
 
