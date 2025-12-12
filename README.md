@@ -1,0 +1,1 @@
+Text archive decoder and encoder for Generation IV Pokémon games
