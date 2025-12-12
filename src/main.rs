@@ -1,5 +1,9 @@
-use clap::{Parser, Subcommand, Args};
+use std::path::PathBuf;
+
+use clap::{Parser, Subcommand, Args, CommandFactory};
+use clap::error::ErrorKind;
 mod decode;
+mod charmap;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -11,13 +15,20 @@ struct Cli {
 enum Commands {
     /// Decrypt and decode binary text archive to text files
     Decode {
+        /// Path to custom character map file
+        #[arg(short='m', long)]
+        charmap: PathBuf,
         #[command(flatten)]
         source: BinarySource,
         #[command(flatten)]
         destination: TextSource,
+        
     },
     /// Encrypt and encode text files to binary text archive
     Encode {
+        /// Path to custom character map file
+        #[arg(short='m', long)]
+        charmap: PathBuf,
         #[command(flatten)]
         source: TextSource,
         #[command(flatten)]
@@ -52,8 +63,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     match &cli.commands {
-        Commands::Decode { source, destination } => {
-            decode::decode_archives(source, destination)
+        Commands::Decode {charmap, source, destination } => {
+            // Ensure input isn't a directory when output is files
+            if source.archive_dir.is_some() && destination.txt.is_some() {
+                let mut cmd = Cli::command();
+                cmd.error(ErrorKind::ArgumentConflict,
+                "Cannot use archive directory with text file outputs",
+            )
+            .exit();
+            }
+
+            let charmap = charmap::read_charmap(charmap)?;
+
+            decode::decode_archives(&charmap, source, destination)
         }
         Commands::Encode { .. } => {
             // Placeholder for encode functionality

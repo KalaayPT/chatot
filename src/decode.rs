@@ -1,4 +1,15 @@
+use std::{f64::consts::E, io::{Cursor, Read}};
+use byteorder::{ReadBytesExt, LittleEndian, BigEndian};
+
+use crate::charmap;
+
+struct MessageTableEntry {
+    offset: u32,
+    length: u32,
+}
+
 pub fn decode_archives(
+    charmap: &charmap::Charmap,
     source: &crate::BinarySource,
     destination: &crate::TextSource,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -38,5 +49,115 @@ pub fn decode_archives(
     println!("Archive files: {:?}", archive_files);
     println!("Text files: {:?}", text_files);
 
+    // Open and decode each archive
+    for (archive_path, text_path) in archive_files.iter().zip(text_files.iter()) {
+        println!("Decoding archive: {:?}", archive_path);
+        let archive_file = std::fs::read(archive_path)?;
+        let lines = decode_archive(&charmap, &archive_file)?;
+        std::fs::write(text_path, lines.join("\n"))?;
+        println!("Decoded text written to: {:?}", text_path);
+    }
+
     Ok(())
+}
+
+pub fn decode_archive(charmap: &charmap::Charmap, archive_file: &Vec<u8>) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    
+    let mut archive = Cursor::new(archive_file  );
+
+    // Read u16 message count (2 bytes)
+    let message_count = archive.read_u16::<LittleEndian>()?;
+
+    let mut lines = Vec::with_capacity(message_count as usize);
+
+    // Read u16 key (2 bytes)
+    let key = archive.read_u16::<LittleEndian>()?;
+
+    // Read message table entries
+    let mut message_table = Vec::new();
+    for i in 0..message_count {
+        let mut offset = archive.read_u32::<LittleEndian>()?;
+        let mut length = archive.read_u32::<LittleEndian>()?;
+
+        let mut local_key: u32 = ((765 * (i+1) * key) & 0xFFFF).into();
+        local_key |= local_key << 16;
+        offset ^= local_key;
+        length ^= local_key;
+
+        message_table.push(MessageTableEntry { offset, length });
+    }
+
+    // Read and decode messages
+    for (i, entry) in message_table.iter().enumerate() {
+        
+        // Ensure offset and length are within bounds (length is in u16 units)
+        if (entry.offset as usize + (entry.length * 2) as usize) > archive.get_ref().len() {
+            return Err("Invalid message entry offset/length".into());
+        }
+
+        archive.set_position(entry.offset as u64);
+        let mut encrypted_message = vec![0u16; entry.length as usize];
+        encrypted_message
+            .iter_mut()
+            .for_each(|c| *c = archive.read_u16::<LittleEndian>().unwrap());
+        let decrypted_message = decrypt_message(&encrypted_message, i as u16);
+
+        let message_string = decode_message_to_string(&charmap, &decrypted_message);
+        lines.push(message_string);
+    }
+
+    Ok(lines)
+}
+
+
+pub fn decrypt_message(encrypted_message: &Vec<u16>, index: u16) -> Vec<u16> {
+    let mut decrypted_message = Vec::with_capacity(encrypted_message.len());
+    let mut current_key: u16 = (index as u32 * 596947u32) as u16;
+
+    for &enc_char in encrypted_message {
+        let dec_char = enc_char ^ current_key;
+        decrypted_message.push(dec_char);
+        current_key = (current_key + 18749) & 0xFFFF;
+    }
+
+    decrypted_message
+}
+
+pub fn decode_message_to_string(charmap: &charmap::Charmap, decrypted_message: &Vec<u16>) -> String {
+
+    let mut i = 0;
+    let mut result = String::new();
+
+    while (i < decrypted_message.len()) {
+
+        let code = decrypted_message[i];
+
+        // Termination character
+        if code == 0xFFFF {
+            break;
+        }
+        // Special Command Character
+        else if code == 0xFFFE {
+            // NYI: Handle special commands
+        }
+        // Trainer Name
+        else if code == 0xF100 {
+            // NYI: Insert trainer name
+        }
+        // Regular character
+        else if charmap.encode_map.contains_key(&code.to_string()) {
+            let character = charmap.decode_map.get(&code).unwrap();
+            result.push_str(character);
+            i += 1;
+        }
+        // Unknown character code
+        else {
+            result.push_str(&format!("0x{:04X}", code));
+            i += 1;
+        }
+
+    }
+
+    result
+    
 }
