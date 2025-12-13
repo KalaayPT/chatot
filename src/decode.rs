@@ -46,16 +46,13 @@ pub fn decode_archives(
         return Err("No text destination specified".into());
     };
 
-    println!("Archive files: {:?}", archive_files);
-    println!("Text files: {:?}", text_files);
-
     // Open and decode each archive
     for (archive_path, text_path) in archive_files.iter().zip(text_files.iter()) {
-        println!("Decoding archive: {:?}", archive_path);
         let archive_file = std::fs::read(archive_path)?;
         let lines = decode_archive(&charmap, &archive_file)?;
-        std::fs::write(text_path, lines.join("\n"))?;
-        println!("Decoded text written to: {:?}", text_path);
+        let mut content = lines.join("\n");
+        content.push('\n'); // Add trailing newline
+        std::fs::write(text_path, content)?;
     }
 
     Ok(())
@@ -68,12 +65,13 @@ pub fn decode_archive(charmap: &charmap::Charmap, archive_file: &Vec<u8>) -> Res
     // Read u16 message count (2 bytes)
     let message_count = archive.read_u16::<LittleEndian>()?;
 
-    let mut lines = Vec::with_capacity( (message_count as usize) * std::mem::size_of::<String>());
+    let mut lines = Vec::with_capacity( (message_count as usize) * 40); // Rough estimate
 
     // Read u16 key (2 bytes)
     let key = archive.read_u16::<LittleEndian>()?;
 
-    println!("Message count: {}, Key: 0x{:04X}", message_count, key);
+    // Add key as first line for re-encoding
+    lines.push(format!("// Key: {:04X}", key));
 
     // Read message table entries
     let mut message_table = Vec::new();
@@ -163,6 +161,7 @@ pub fn decode_message_to_string(charmap: &charmap::Charmap, decrypted_message: &
         }
         // Unknown character code
         else {
+            eprintln!("Warning: unknown character code 0x{:04X} encountered during decoding", code);
             result.push_str(&format!("0x{:04X}", code));
             i += 1;
         }

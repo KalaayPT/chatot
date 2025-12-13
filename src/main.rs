@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand, Args, CommandFactory};
 use clap::error::ErrorKind;
 mod decode;
+mod encode;
 mod charmap;
 
 #[derive(Parser)]
@@ -36,27 +37,27 @@ enum Commands {
     },
 }
 
-#[derive(Args)]
+#[derive(Args, Clone)]
 #[group(required = true, multiple = false)]
-struct BinarySource {
+pub struct BinarySource {
     /// Path(s) to the binary text archive(s)        
     #[arg(short, long, num_args = 1.., conflicts_with = "archive_dir")]
-    archive: Option<Vec<std::path::PathBuf>>,
+    pub archive: Option<Vec<std::path::PathBuf>>,
     /// Directory for archives
     #[arg(short='s', long, conflicts_with = "archive")]
-    archive_dir: Option<std::path::PathBuf>,
+    pub archive_dir: Option<std::path::PathBuf>,
     
 }
 
-#[derive(Args)]
+#[derive(Args, Clone)]
 #[group(required = true, multiple = false)]
-struct TextSource {
+pub struct TextSource {
     /// Path(s) to the text file(s)
     #[arg(short, long, num_args = 1.., conflicts_with = "text_dir")]
-    txt: Option<Vec<std::path::PathBuf>>,
+    pub txt: Option<Vec<std::path::PathBuf>>,
     /// Directory for text files
     #[arg(short='d', long, conflicts_with = "txt")]
-    text_dir: Option<std::path::PathBuf>,
+    pub text_dir: Option<std::path::PathBuf>,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -75,13 +76,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let charmap = charmap::read_charmap(charmap)?;
 
-            //println!("{}", charmap.decode_map.get(&0x01DE).unwrap());
-
             decode::decode_archives(&charmap, source, destination)
         }
-        Commands::Encode { .. } => {
-            // Placeholder for encode functionality
-            Ok(())
+        Commands::Encode { charmap, source, destination } => {
+            // Ensure input isn't a directory when output is files
+            if source.text_dir.is_some() && destination.archive.is_some() {
+                let mut cmd = Cli::command();
+                cmd.error(ErrorKind::ArgumentConflict,
+                "Cannot use text directory with archive file outputs",
+            )
+            .exit();
+            }
+
+            let charmap = charmap::read_charmap(charmap)?;
+
+            encode::encode_texts(&charmap, source, destination)
         }
     }
 }
