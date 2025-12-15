@@ -5,6 +5,12 @@ use rayon::prelude::*;
 
 use crate::charmap;
 
+#[allow(dead_code)]
+struct TextArchive {
+    key: u16,
+    messages: Vec<String>,
+}
+
 struct MessageTableEntry {
     offset: u32,
     length: u32,
@@ -14,6 +20,7 @@ pub fn encode_texts(
     charmap: &charmap::Charmap,
     source: &crate::TextSource,
     destination: &crate::BinarySource,
+    settings: &crate::Settings,
 ) -> Result<(), Box<dyn std::error::Error>> {
     
     // Get list of text files
@@ -57,6 +64,26 @@ pub fn encode_texts(
     let results: Vec<Result<(), String>> = text_archive_pairs
         .par_iter()
         .map(|(text_path, archive_path)| {
+
+            // Check if newer_only setting is enabled and skip if destination is newer
+            if settings.newer_only {
+                if text_path.exists() {
+                    let archive_metadata = std::fs::metadata(archive_path)
+                        .map_err(|e| format!("Failed to get metadata for archive {:?}: {}", archive_path, e))?;
+                    let text_metadata = std::fs::metadata(text_path)
+                        .map_err(|e| format!("Failed to get metadata for text file {:?}: {}", text_path, e))?;
+                    let archive_modified = archive_metadata.modified()
+                        .map_err(|e| format!("Failed to get modified time for archive {:?}: {}", archive_path, e))?;
+                    let text_modified = text_metadata.modified()
+                        .map_err(|e| format!("Failed to get modified time for text file {:?}: {}", text_path, e))?;
+                    if archive_modified >= text_modified {
+                        #[cfg(debug_assertions)]
+                        println!("Skipping decoding of {:?} as destination {:?} is newer", archive_path, text_path);
+                        return Ok(());
+                    }
+                }
+            }
+
             #[cfg(debug_assertions)]
             println!("Encoding text: {:?} -> {:?}", text_path, archive_path);
 

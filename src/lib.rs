@@ -16,3 +16,11 @@ pub struct TextSource {
     pub txt: Option<Vec<PathBuf>>,
     pub text_dir: Option<PathBuf>,
 }
+
+#[derive(Clone)]
+pub struct Settings {
+    pub json: bool,
+    pub lang: String,
+    pub newer_only: bool,
+}
+

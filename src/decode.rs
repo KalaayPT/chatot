@@ -1,8 +1,34 @@
-use std::{io::Cursor};
+use std::{collections::HashMap, io::Cursor};
 use byteorder::{ReadBytesExt, LittleEndian};
 use rayon::prelude::*;
+use serde_derive::Serialize;
 
 use crate::charmap;
+
+struct TextArchive {
+    key: u16,
+    messages: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct JsonMessage {
+    id: String,
+    #[serde(flatten)]
+    lang_message: HashMap<String, MessageContent>
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum MessageContent {
+    Single(String),
+    Multi(Vec<String>),
+}
+
+#[derive(Serialize)]
+struct JsonOutput {
+    key: u16,
+    messages: Vec<JsonMessage>,
+}
 
 struct MessageTableEntry {
     offset: u32,
@@ -13,6 +39,7 @@ pub fn decode_archives(
     charmap: &charmap::Charmap,
     source: &crate::BinarySource,
     destination: &crate::TextSource,
+    settings: &crate::Settings,
 ) -> Result<(), Box<dyn std::error::Error>> {
     
     // Get list of archive files
@@ -56,18 +83,43 @@ pub fn decode_archives(
     let results: Vec<Result<(), String>> = archive_text_pairs
         .par_iter()
         .map(|(archive_path, text_path)| {
-            
+
+            // Check newer_only setting is enabled and skip if destination is newer
+            if settings.newer_only {
+                if text_path.exists() {
+                    let archive_metadata = std::fs::metadata(archive_path)
+                        .map_err(|e| format!("Failed to get metadata for archive {:?}: {}", archive_path, e))?;
+                    let text_metadata = std::fs::metadata(text_path)
+                        .map_err(|e| format!("Failed to get metadata for text file {:?}: {}", text_path, e))?;
+                    let archive_modified = archive_metadata.modified()
+                        .map_err(|e| format!("Failed to get modified time for archive {:?}: {}", archive_path, e))?;
+                    let text_modified = text_metadata.modified()
+                        .map_err(|e| format!("Failed to get modified time for text file {:?}: {}", text_path, e))?;
+                    if archive_modified <= text_modified {
+                        #[cfg(debug_assertions)]
+                        println!("Skipping decoding of {:?} as destination {:?} is newer", archive_path, text_path);
+                        return Ok(());
+                    }
+                }
+            }
+
             #[cfg(debug_assertions)]
             println!("Decoding archive: {:?} -> {:?}", archive_path, text_path);
 
             let archive_file = std::fs::read(archive_path)
                 .map_err(|e| format!("Failed to read archive {:?}: {}", archive_path, e))?;
-            let lines = decode_archive(&charmap, &archive_file)
+            let archive = decode_archive(&charmap, &archive_file)
                 .map_err(|e| format!("Failed to decode archive {:?}: {}", archive_path, e))?;
-            let mut content = lines.join("\n");
-            content.push('\n'); // Add trailing newline
-            std::fs::write(text_path, content)
-                .map_err(|e| format!("Failed to write text {:?}: {}", text_path, e))?;
+
+            if settings.json {
+                write_decoded_json(&archive, text_path, settings.lang.clone())
+                    .map_err(|e| format!("Failed to write decoded JSON to {:?}: {}", text_path, e))?;
+            } else {
+                write_decoded_text(&archive, text_path)
+                    .map_err(|e| format!("Failed to write decoded text to {:?}: {}", text_path, e))?;
+            }
+
+            
             Ok(())
         })
         .collect();
@@ -80,23 +132,86 @@ pub fn decode_archives(
     Ok(())
 }
 
-pub fn decode_archive(charmap: &charmap::Charmap, archive_file: &Vec<u8>) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+fn write_decoded_text(
+    archive: &TextArchive,
+    text_path: &std::path::PathBuf,
+) -> Result<(), Box<dyn std::error::Error>> {
+    
+    let mut content = archive.messages.join("\n");
+    // Prepend key as comment
+    content = format!("// Key: 0x{:04X}\n{}", archive.key, content);
+    content.push('\n'); // Add trailing newline
+    std::fs::write(text_path, content)?;
+    
+    Ok(())
+}
+
+fn write_decoded_json(
+    archive: &TextArchive,
+    text_path: &std::path::PathBuf,
+    lang: String,
+) -> Result<(), Box<dyn std::error::Error>> {
+
+    // Determine archive name from text_path file name
+    let archive_name = text_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("archive");
+    
+    let json_messages: Vec<JsonMessage> = archive.messages
+        .iter()
+        .enumerate()
+        .map(|(idx, msg)| {
+            let id = format!("pl_msg_{}_{:05}", archive_name, idx);
+            
+            // Split message by literal \n sequences (backslash-n, not newline character)
+            let lines: Vec<&str> = msg.split("\\n").collect();
+            
+            // If there's only one line, use Single variant
+            // If multiple lines, use Multi variant with each line as a separate string
+            let content = if lines.len() == 1 {
+                MessageContent::Single(msg.clone())
+            } else {
+                MessageContent::Multi(
+                    lines.iter().map(|line| format!("{}\n", line)).collect()
+                )
+            };
+
+            let mut lang_map = HashMap::new();
+            lang_map.insert(lang.clone(), content);
+            
+            JsonMessage {
+                id,
+                lang_message: lang_map,
+            }
+        })
+        .collect();
+    
+    let output = JsonOutput {
+        key: archive.key,
+        messages: json_messages,
+    };
+    
+    let json_string = serde_json::to_string_pretty(&output)?;
+    std::fs::write(text_path, json_string)?;
+    
+    Ok(())
+}
+
+fn decode_archive(charmap: &charmap::Charmap, archive_file: &Vec<u8>) -> Result<TextArchive, Box<dyn std::error::Error>> {
     
     let mut archive = Cursor::new(archive_file  );
 
     // Read u16 message count (2 bytes)
     let message_count = archive.read_u16::<LittleEndian>()?;
 
-    let mut lines = Vec::with_capacity( (message_count as usize) * 40); // Rough estimate
+    let mut messages = Vec::with_capacity( (message_count as usize) * 40); // Rough estimate
 
     // Read u16 key (2 bytes)
     let key = archive.read_u16::<LittleEndian>()?;
 
     #[cfg(debug_assertions)]
     println!("Decoding archive with {} messages, key=0x{:04X}", message_count, key);
-
-    // Add key as first line for re-encoding
-    lines.push(format!("// Key: 0x{:04X}", key));
 
     // Read message table entries
     let mut message_table = Vec::new();
@@ -132,14 +247,14 @@ pub fn decode_archive(charmap: &charmap::Charmap, archive_file: &Vec<u8>) -> Res
         let decrypted_message = decrypt_message(&encrypted_message, (i + 1) as u16);
 
         let message_string = decode_message_to_string(&charmap, &decrypted_message);
-        lines.push(message_string);
+        messages.push(message_string);
     }
 
-    Ok(lines)
+    Ok(TextArchive { key, messages })
 }
 
 
-pub fn decrypt_message(encrypted_message: &Vec<u16>, index: u16) -> Vec<u16> {
+fn decrypt_message(encrypted_message: &Vec<u16>, index: u16) -> Vec<u16> {
     let mut decrypted_message = Vec::with_capacity(encrypted_message.len());
     let mut current_key: u16 = (index as u32).wrapping_mul(596947) as u16;
 
@@ -153,7 +268,7 @@ pub fn decrypt_message(encrypted_message: &Vec<u16>, index: u16) -> Vec<u16> {
     decrypted_message
 }
 
-pub fn decode_message_to_string(charmap: &charmap::Charmap, decrypted_message: &Vec<u16>) -> String {
+fn decode_message_to_string(charmap: &charmap::Charmap, decrypted_message: &Vec<u16>) -> String {
 
     let mut i = 0;
     let mut result = String::new();
@@ -201,7 +316,7 @@ pub fn decode_message_to_string(charmap: &charmap::Charmap, decrypted_message: &
     
 }
 
-pub fn decode_command(charmap: &charmap::Charmap, message_slice: &[u16]) -> (String, usize) {
+fn decode_command(charmap: &charmap::Charmap, message_slice: &[u16]) -> (String, usize) {
     let mut result = String::new();
     let mut to_skip = 1; // Skip the 0xFFFE code
 
@@ -261,7 +376,7 @@ pub fn decode_command(charmap: &charmap::Charmap, message_slice: &[u16]) -> (Str
     (result, to_skip)
 }
 
-pub fn decode_trainer_name(charmap: &charmap::Charmap, message_slice: &[u16]) -> (String, usize) {
+fn decode_trainer_name(charmap: &charmap::Charmap, message_slice: &[u16]) -> (String, usize) {
     let mut result = String::new();
     let mut to_skip = 1; // Skip the 0xF100 code
 
