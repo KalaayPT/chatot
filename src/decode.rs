@@ -48,10 +48,15 @@ pub fn decode_archives(
     };
 
     // Open and decode each archive in parallel
-    let results: Vec<Result<(), String>> = archive_files
+    let archive_text_pairs: Vec<_> = archive_files
+        .into_iter()
+        .zip(text_files.into_iter())
+        .collect();
+    
+    let results: Vec<Result<(), String>> = archive_text_pairs
         .par_iter()
-        .zip(text_files.par_iter())
         .map(|(archive_path, text_path)| {
+            
             #[cfg(debug_assertions)]
             println!("Decoding archive: {:?} -> {:?}", archive_path, text_path);
 

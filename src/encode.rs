@@ -49,9 +49,13 @@ pub fn encode_texts(
     };
 
     // Open and encode each text file in parallel
-    let results: Vec<Result<(), String>> = text_files
+    let text_archive_pairs: Vec<_> = text_files
+        .into_iter()
+        .zip(archive_files.into_iter())
+        .collect();
+    
+    let results: Vec<Result<(), String>> = text_archive_pairs
         .par_iter()
-        .zip(archive_files.par_iter())
         .map(|(text_path, archive_path)| {
             #[cfg(debug_assertions)]
             println!("Encoding text: {:?} -> {:?}", text_path, archive_path);
