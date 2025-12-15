@@ -106,10 +106,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let charmap = charmap::read_charmap(charmap)?;
 
-            if settings.json {
-                eprintln!("Warning: JSON input/output is not yet implemented, proceeding with plain text.");
-            }
-
             encode::encode_texts(&charmap, source, destination, settings)
         }
     }

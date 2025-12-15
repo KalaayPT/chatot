@@ -1,19 +1,37 @@
+use std::collections::HashMap;
 use std::io::Cursor;
 use std::mem::size_of;
 use byteorder::{WriteBytesExt, LittleEndian};
 use rayon::prelude::*;
+use serde_derive::Deserialize;
+use serde_json;
 
 use crate::charmap;
-
-#[allow(dead_code)]
-struct TextArchive {
-    key: u16,
-    messages: Vec<String>,
-}
 
 struct MessageTableEntry {
     offset: u32,
     length: u32,
+}
+
+#[derive(Deserialize)]
+struct JsonMessage {
+    #[allow(dead_code)]
+    id: String,
+    #[serde(flatten)]
+    lang_message: HashMap<String, MessageContent>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum MessageContent {
+    Single(String),
+    Multi(Vec<String>),
+}
+
+#[derive(Deserialize)]
+struct JsonInput {
+    key: u16,
+    messages: Vec<JsonMessage>,
 }
 
 pub fn encode_texts(
@@ -89,8 +107,13 @@ pub fn encode_texts(
 
             let text_content = std::fs::read_to_string(text_path)
                 .map_err(|e| format!("Failed to read text {:?}: {}", text_path, e))?;
-            let encoded_data = encode_text(&charmap, &text_content)
-                .map_err(|e| format!("Failed to encode text {:?}: {}", text_path, e))?;
+            let encoded_data = if settings.json {
+                encode_json(&charmap, &text_content, &settings.lang)
+                    .map_err(|e| format!("Failed to encode JSON {:?}: {}", text_path, e))?
+            } else {
+                encode_text(&charmap, &text_content)
+                    .map_err(|e| format!("Failed to encode text {:?}: {}", text_path, e))?
+            };
             std::fs::write(archive_path, encoded_data)
                 .map_err(|e| format!("Failed to write archive {:?}: {}", archive_path, e))?;
             Ok(())
@@ -105,22 +128,14 @@ pub fn encode_texts(
     Ok(())
 }
 
-pub fn encode_text(
+fn encode_text(
     charmap: &charmap::Charmap,
     text: &str,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let mut key = 0u16;
+    let mut messages: Vec<String> = Vec::new();
 
-    let mut key=0u16;
-    let mut message_index=0usize;
-
-    // Create message table
-    let mut message_table: Vec<MessageTableEntry> = Vec::new();
-
-    // Collect encoded messages
-    let mut encoded_messages = Vec::new();
-
-    // Read line by line
-    for line in text.lines(){
+    for line in text.lines() {
 
         // First line is key (// Key: XXXX)
         if let Some(key_str) = line.strip_prefix("// Key: ") {
@@ -133,11 +148,61 @@ pub fn encode_text(
             continue;
         }
 
+        messages.push(line.to_string());
+    }
+
+    encode_messages(charmap, key, &messages)
+}
+
+fn encode_json(
+    charmap: &charmap::Charmap,
+    json_content: &str,
+    lang: &str,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let parsed: JsonInput = serde_json::from_str(json_content)?;
+
+    let mut messages: Vec<String> = Vec::with_capacity(parsed.messages.len());
+
+    for msg in parsed.messages.iter() {
+        let content = msg
+            .lang_message
+            .get(lang)
+            .or_else(|| msg.lang_message.get("en_US"))
+            .ok_or_else(|| format!("Language '{}' not found in message {}", lang, msg.id))?;
+
+        let message_str = match content {
+            MessageContent::Single(s) => s.clone(),
+            MessageContent::Multi(lines) => {
+                lines.join("")
+            }
+        };
+
+        messages.push(message_str);
+    }
+
+    encode_messages(charmap, parsed.key, &messages)
+}
+
+fn encode_messages(
+    charmap: &charmap::Charmap,
+    key: u16,
+    messages: &[String],
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+
+    let mut message_index = 0usize;
+
+    // Create message table
+    let mut message_table: Vec<MessageTableEntry> = Vec::new();
+
+    // Collect encoded messages
+    let mut encoded_messages = Vec::new();
+
+    for message in messages {
         // Start from message index 1
         message_index += 1;
 
-        let message_codes = encode_string_to_message(charmap, line);
-        let mut encrypted_codes = encrypt_message(&message_codes, message_index as u16); 
+        let message_codes = encode_string_to_message(charmap, message);
+        let mut encrypted_codes = encrypt_message(&message_codes, message_index as u16);
 
         let len = encrypted_codes.len() as u32; // length in u16 units
 
@@ -155,12 +220,11 @@ pub fn encode_text(
 
         // Append encrypted message to encoded data
         encoded_messages.append(&mut encrypted_codes);
-        
     }
 
     // Adjust offsets in message table to account for table itself and header
     let message_count = message_table.len();
-    let table_size = message_count* size_of::<MessageTableEntry>(); // each entry
+    let table_size = message_count * size_of::<MessageTableEntry>(); // each entry
     let header_size = 4; // 2 bytes for message count + 2 bytes for key
     for entry in message_table.iter_mut() {
         entry.offset += table_size as u32 + header_size;
@@ -177,7 +241,7 @@ pub fn encode_text(
     for (i, entry) in message_table.iter().enumerate() {
         // Encrypt offset and length
         let mut local_key: u32 = 765;
-        local_key = local_key.wrapping_mul((i+1) as u32);
+        local_key = local_key.wrapping_mul((i + 1) as u32);
         local_key = local_key.wrapping_mul(key as u32);
         local_key &= 0xFFFF;
         local_key |= local_key << 16;
@@ -186,7 +250,7 @@ pub fn encode_text(
         let enc_length = entry.length ^ local_key;
 
         cursor.write_u32::<LittleEndian>(enc_offset)?;
-        cursor.write_u32::<LittleEndian>(enc_length)?;   
+        cursor.write_u32::<LittleEndian>(enc_length)?;
     }
 
     // Write encoded messages
@@ -197,7 +261,7 @@ pub fn encode_text(
     Ok(cursor.into_inner())
 }
 
-pub fn encrypt_message(decrypted_message: &Vec<u16>, index: u16) -> Vec<u16> {
+fn encrypt_message(decrypted_message: &Vec<u16>, index: u16) -> Vec<u16> {
     let mut encrypted_message = Vec::new();
 
     let mut current_key: u16 = (index as u32).wrapping_mul(596947) as u16;
@@ -212,7 +276,7 @@ pub fn encrypt_message(decrypted_message: &Vec<u16>, index: u16) -> Vec<u16> {
     encrypted_message
 }
 
-pub fn encode_string_to_message(
+fn encode_string_to_message(
     charmap: &charmap::Charmap,
     text: &str,
 ) -> Vec<u16>{
@@ -362,7 +426,7 @@ pub fn encode_string_to_message(
 }
 
 
-pub fn encode_command(
+fn encode_command(
     charmap: &charmap::Charmap,
     command_str: &str,
 ) -> Vec<u16> {
@@ -417,7 +481,7 @@ pub fn encode_command(
     command_codes
 }
 
-pub fn encode_trainer_name(
+fn encode_trainer_name(
     charmap: &charmap::Charmap,
     name_str: &str,
 ) -> Vec<u16> {
@@ -458,7 +522,7 @@ pub fn encode_trainer_name(
     name_codes
 }
 
-pub fn parse_hex_or_decimal(number_str: &str) -> u32 {
+fn parse_hex_or_decimal(number_str: &str) -> u32 {
     let number = if number_str.starts_with("0x") {
         u32::from_str_radix(&number_str[2..], 16).unwrap_or(0)
     } else {

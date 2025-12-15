@@ -1,7 +1,7 @@
-use std::{collections::HashMap, io::Cursor};
+use std::{collections::{HashMap, HashSet}, io::Cursor};
 use byteorder::{ReadBytesExt, LittleEndian};
 use rayon::prelude::*;
-use serde_derive::Serialize;
+use serde_derive::{Serialize, Deserialize};
 
 use crate::charmap;
 
@@ -10,21 +10,21 @@ struct TextArchive {
     messages: Vec<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize, Clone)]
 struct JsonMessage {
     id: String,
     #[serde(flatten)]
     lang_message: HashMap<String, MessageContent>
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(untagged)]
 enum MessageContent {
     Single(String),
     Multi(Vec<String>),
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize, Clone)]
 struct JsonOutput {
     key: u16,
     messages: Vec<JsonMessage>,
@@ -59,6 +59,8 @@ pub fn decode_archives(
     let text_files = if let Some(files) = &destination.txt {
         files.clone()
     } else if let Some(dir) = &destination.text_dir {
+        let extension = if settings.json { "json" } else { "txt" };
+
         // Create vector of text file paths which will be created when writing
         archive_files
             .iter()
@@ -67,7 +69,7 @@ pub fn decode_archives(
                     .file_stem()
                     .and_then(|s| s.to_str())
                     .unwrap_or("output");
-                dir.join(format!("{}.txt", file_stem))
+                dir.join(format!("{}.{}", file_stem, extension))
             })
             .collect()
     } else {
@@ -157,36 +159,68 @@ fn write_decoded_json(
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("archive");
-    
-    let json_messages: Vec<JsonMessage> = archive.messages
+
+    // If JSON already exists, load it to merge languages
+    let mut existing_messages: HashMap<String, JsonMessage> = HashMap::new();
+    if text_path.exists() {
+        if let Ok(existing_str) = std::fs::read_to_string(text_path) {
+            if let Ok(existing_json) = serde_json::from_str::<JsonOutput>(&existing_str) {
+                for msg in existing_json.messages {
+                    existing_messages.insert(msg.id.clone(), msg);
+                }
+            }
+        }
+    }
+
+    let mut seen_ids: HashSet<String> = HashSet::new();
+
+    let mut json_messages: Vec<JsonMessage> = archive.messages
         .iter()
         .enumerate()
         .map(|(idx, msg)| {
-            let id = format!("pl_msg_{}_{:05}", archive_name, idx);
+            let id = format!("msg_{}_{:05}", archive_name, idx);
+            seen_ids.insert(id.clone());
             
-            // Split message by literal \n sequences (backslash-n, not newline character)
-            let lines: Vec<&str> = msg.split("\\n").collect();
+            // Split message by literal \n, \r or \f sequences
+            // This gives us pretty printing while keeping the custom line breaks intact
+            let mut lines: Vec<String> = Vec::new();
+            let mut current = String::new();
             
-            // If there's only one line, use Single variant
-            // If multiple lines, use Multi variant with each line as a separate string
+            for ch in msg.chars() {
+                current.push(ch);
+                if current.ends_with("\\n") || current.ends_with("\\r") || current.ends_with("\\f") {
+                    lines.push(current.clone());
+                    current.clear();
+                }
+            }
+            
+            if !current.is_empty() {
+                lines.push(current);
+            }
+
             let content = if lines.len() == 1 {
                 MessageContent::Single(msg.clone())
             } else {
-                MessageContent::Multi(
-                    lines.iter().map(|line| format!("{}\n", line)).collect()
-                )
+                MessageContent::Multi(lines)
             };
 
-            let mut lang_map = HashMap::new();
-            lang_map.insert(lang.clone(), content);
-            
-            JsonMessage {
-                id,
-                lang_message: lang_map,
-            }
+            // Start from existing message if present to merge languages
+            let mut merged = existing_messages
+                .remove(&id)
+                .unwrap_or(JsonMessage { id: id.clone(), lang_message: HashMap::new() });
+
+            merged.lang_message.insert(lang.clone(), content);
+            merged
         })
         .collect();
-    
+
+    // Preserve any existing messages not present in the current archive (GF can not be trusted)
+    for (id, msg) in existing_messages.into_iter() {
+        if !seen_ids.contains(&id) {
+            json_messages.push(msg);
+        }
+    }
+
     let output = JsonOutput {
         key: archive.key,
         messages: json_messages,
