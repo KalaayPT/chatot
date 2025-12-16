@@ -121,10 +121,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             encode::encode_texts(&charmap, source, destination, settings)
         }
-        Commands::Format { charmap, source : _source, settings: _settings } => {
-            let _charmap = charmap::read_charmap(charmap)?;
-
-            Ok(())
+        Commands::Format { charmap: _charmap, source : _source, settings: _settings } => {
+            
+            let mut cmd = Cli::command();
+            cmd.error(ErrorKind::InvalidSubcommand,
+            "Format command is not yet implemented",
+        )
+        .exit();
         }
     }
 }
