@@ -160,7 +160,11 @@ fn encode_json(
     json_content: &str,
     lang: &str,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    let parsed: JsonInput = serde_json::from_str(json_content)?;
+
+    // Some JSON files may start with a UTF-8 BOM (U+FEFF). Trim it so
+    // serde_json doesn't fail with "expected value at line 1 column 1".
+    let content = json_content.trim_start_matches('\u{FEFF}');
+    let parsed: JsonInput = serde_json::from_str(content)?;
 
     let mut messages: Vec<String> = Vec::with_capacity(parsed.messages.len());
 
@@ -180,6 +184,9 @@ fn encode_json(
 
         messages.push(message_str);
     }
+    
+    #[cfg(debug_assertions)]
+    println!("Encoding JSON with key: 0x{:04X}, messages: {}", parsed.key, messages.len());
 
     encode_messages(charmap, parsed.key, &messages, false)
 }
