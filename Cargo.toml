@@ -3,6 +3,7 @@ name = "chatot"
 version = "0.4.1"
 edition = "2024"
 description = "A text archive decoder and encoder for the generation IV Pokémon games"
+license-file = "LICENSE"
 
 [dependencies]
 byteorder = "1.5.0"
