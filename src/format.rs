@@ -37,13 +37,24 @@ fn lookup_width(code: u16, widths: &[u8], fallback: u32) -> u32 {
         .unwrap_or(fallback)
 }
 
+/// A hard line break present in the source text.
+enum BreakKind {
+    /// `\n` — line feed. Parity-sensitive: it moves to the next line, which
+    /// from the bottom line of the box can only be done by clearing (`\r`).
+    Line,
+    /// `\r` — clear the text box (and show the "press to continue" prompt).
+    Clear,
+    /// `\f` — scroll the text box one line.
+    Scroll,
+}
+
 enum Item {
     /// A run of glyphs with no spaces or breaks, and its pixel width.
     Word(String, u32),
     /// A run of one or more spaces, and its total pixel width.
     Space(String, u32),
-    /// A hard line break present in the source (`\n`, `\r` or `\f`).
-    HardBreak(String),
+    /// A hard line break present in the source.
+    HardBreak(BreakKind),
 }
 
 fn flush_word(items: &mut Vec<Item>, word: &mut String, word_px: &mut u32) {
@@ -86,7 +97,12 @@ fn tokenize(text: &str, charmap: &Charmap, widths: &[u8]) -> Result<Vec<Item>, F
             '\\' => match chars.next() {
                 Some(brk @ ('n' | 'r' | 'f')) => {
                     flush_word(&mut items, &mut word, &mut word_px);
-                    items.push(Item::HardBreak(format!("\\{brk}")));
+                    let kind = match brk {
+                        'n' => BreakKind::Line,
+                        'r' => BreakKind::Clear,
+                        _ => BreakKind::Scroll,
+                    };
+                    items.push(Item::HardBreak(kind));
                 }
                 Some('x') => {
                     let mut hex = String::with_capacity(4);
@@ -230,12 +246,17 @@ pub fn line_is_too_long(
 /// Wrap dialogue text so no line exceeds `max_line_px`, inserting soft line
 /// breaks (`\n`) and box clears (`\r`) as needed.
 ///
-/// Hard breaks and runs of spaces already in the input are preserved verbatim
-/// — the function only ever *adds* break codes. The view alternates between
-/// the two lines of the text box: a soft break on the top line emits `\n`, and
-/// one on the bottom line emits `\r` to clear the box. A trailing `\r` is
-/// appended (unless the text already ends in a hard break) so the message ends
-/// with a "press to continue" prompt.
+/// The view alternates between the two lines of the text box: a break on the
+/// top line emits `\n` (move to the bottom line), and a break on the bottom
+/// line emits `\r` (clear the box). This applies to soft breaks *and* to hard
+/// `\n` breaks already in the input — a hard `\n` reached while on the bottom
+/// line is realised as `\r`, because a literal line feed there would overflow
+/// the two-line box. Hard `\r` and `\f` breaks are emitted unchanged (they
+/// clear/scroll regardless of view position). Runs of spaces are preserved
+/// verbatim.
+///
+/// A trailing `\r` is appended (unless the text already ends in a hard break)
+/// so the message ends with a "press to continue" prompt.
 ///
 /// Returns [`FormatError::WordTooLong`] if a single word is wider than
 /// `max_line_px`: such a word cannot fit on any line and cannot be split.
@@ -255,10 +276,26 @@ pub fn word_wrap(
 
     for item in items {
         match item {
-            Item::HardBreak(marker) => {
+            Item::HardBreak(kind) => {
                 pending_space = None;
-                view_slot = if marker == "\\n" { 1 } else { 0 };
-                result.push_str(&marker);
+                match kind {
+                    // A line feed from the bottom line of the box would
+                    // overflow it, so realise it as a clear instead. This
+                    // keeps the \n/\r alternation valid wherever soft-wrapping
+                    // left the view.
+                    BreakKind::Line if view_slot == 0 => {
+                        result.push_str("\\n");
+                        view_slot = 1;
+                    }
+                    BreakKind::Line | BreakKind::Clear => {
+                        result.push_str("\\r");
+                        view_slot = 0;
+                    }
+                    BreakKind::Scroll => {
+                        result.push_str("\\f");
+                        view_slot = 0;
+                    }
+                }
                 line_px = 0;
                 at_line_start = true;
             }
@@ -399,6 +436,28 @@ mod tests {
         assert_eq!(
             word_wrap("hi\\rbye", cm, w, DIALOG_LINE_MAX_PX).unwrap(),
             "hi\\rbye\\r"
+        );
+    }
+
+    #[test]
+    fn word_wrap_hard_break_keeps_alternation_after_soft_wrap() {
+        let cm = get_default_charmap();
+        let w = default_glyph_widths();
+        // "a b" soft-wraps "b" onto the bottom line, so the explicit \n that
+        // follows arrives while on the bottom line. It must be realised as \r
+        // (clear) — a second \n there would overflow the two-line box.
+        assert_eq!(word_wrap("a b\\nc", cm, w, 10).unwrap(), "a\\nb\\rc\\r");
+    }
+
+    #[test]
+    fn word_wrap_hard_break_on_top_line_stays_line_feed() {
+        let cm = get_default_charmap();
+        let w = default_glyph_widths();
+        // No soft-wrapping happens, so the hard \n is reached on the top line
+        // and is emitted unchanged.
+        assert_eq!(
+            word_wrap("a\\nb", cm, w, DIALOG_LINE_MAX_PX).unwrap(),
+            "a\\nb\\r"
         );
     }
 
