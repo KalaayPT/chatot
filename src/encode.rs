@@ -9,6 +9,7 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use crate::charmap;
+use crate::error::FormatError;
 
 struct MessageTableEntry {
     offset: u32,
@@ -40,7 +41,7 @@ struct JsonInput {
 pub struct ErrorFormat {
     /// The message string being encoded.
     pub source: String,
-    pub err_msg: String,
+    pub error: FormatError,
     pub span: Range<usize>,
     pub file: Option<PathBuf>,
 }
@@ -381,7 +382,7 @@ fn encode_messages(
             .unwrap_or_else(|| "(none)".to_string());
         eprintln!(
             "Warning: {}\nFile: {}\nIn message:\n{}",
-            warning.err_msg,
+            warning.error,
             file,
             warning.span_marker(),
         );
@@ -453,7 +454,7 @@ fn encode_string_to_message(
                 ctx.span = bracket_start..byte_pos;
                 warnings.push(ErrorFormat {
                     source: ctx.source.to_string(),
-                    err_msg: format!("unknown alias '{alias}'. Inserting null code."),
+                    error: FormatError::UnknownAlias(alias.clone()),
                     span: ctx.span.clone(),
                     file: ctx.file.map(|p| p.to_path_buf()),
                 });
@@ -461,7 +462,7 @@ fn encode_string_to_message(
                 ctx.span = bracket_start..byte_pos;
                 warnings.push(ErrorFormat {
                     source: ctx.source.to_string(),
-                    err_msg: "unmatched '[' in text. Inserting null code.".into(),
+                    error: FormatError::UnmatchedBracket,
                     span: ctx.span.clone(),
                     file: ctx.file.map(|p| p.to_path_buf()),
                 });
@@ -496,9 +497,7 @@ fn encode_string_to_message(
                             ctx.span = escape_start..byte_pos;
                             warnings.push(ErrorFormat {
                                 source: ctx.source.to_string(),
-                                err_msg: format!(
-                                    "invalid escape sequence '\\x{hex_str}'. Inserting null code."
-                                ),
+                                error: FormatError::InvalidHexEscape(hex_str.clone()),
                                 span: ctx.span.clone(),
                                 file: ctx.file.map(|p| p.to_path_buf()),
                             });
@@ -509,7 +508,7 @@ fn encode_string_to_message(
                         ctx.span = escape_start..byte_pos;
                         warnings.push(ErrorFormat {
                             source: ctx.source.to_string(),
-                            err_msg: "incomplete hex escape sequence. Inserting null code.".into(),
+                            error: FormatError::IncompleteHexEscape,
                             span: ctx.span.clone(),
                             file: ctx.file.map(|p| p.to_path_buf()),
                         });
@@ -530,9 +529,7 @@ fn encode_string_to_message(
                         ctx.span = escape_start..byte_pos;
                         warnings.push(ErrorFormat {
                             source: ctx.source.to_string(),
-                            err_msg: format!(
-                                "unknown escape sequence '{escape_seq}'. Inserting null code."
-                            ),
+                            error: FormatError::UnknownEscape(escape_seq.clone()),
                             span: ctx.span.clone(),
                             file: ctx.file.map(|p| p.to_path_buf()),
                         });
@@ -544,8 +541,7 @@ fn encode_string_to_message(
                 ctx.span = escape_start..byte_pos;
                 warnings.push(ErrorFormat {
                     source: ctx.source.to_string(),
-                    err_msg: "incomplete escape sequence at end of text. Inserting null code."
-                        .into(),
+                    error: FormatError::IncompleteEscapeAtEnd,
                     span: ctx.span.clone(),
                     file: ctx.file.map(|p| p.to_path_buf()),
                 });
@@ -578,7 +574,7 @@ fn encode_string_to_message(
                 ctx.span = command_span;
                 warnings.push(ErrorFormat {
                     source: ctx.source.to_string(),
-                    err_msg: "unmatched '{' in text. Inserting null code.".into(),
+                    error: FormatError::UnmatchedBrace,
                     span: ctx.span.clone(),
                     file: ctx.file.map(|p| p.to_path_buf()),
                 });
@@ -590,7 +586,7 @@ fn encode_string_to_message(
                 ctx.span = command_span;
                 warnings.push(ErrorFormat {
                     source: ctx.source.to_string(),
-                    err_msg: "empty command '{}'. Inserting null code.".into(),
+                    error: FormatError::EmptyCommand,
                     span: ctx.span.clone(),
                     file: ctx.file.map(|p| p.to_path_buf()),
                 });
@@ -630,7 +626,7 @@ fn encode_string_to_message(
             ctx.span = ch_start..byte_pos;
             warnings.push(ErrorFormat {
                 source: ctx.source.to_string(),
-                err_msg: format!("unknown character '{ch}'. Inserting null code."),
+                error: FormatError::UnknownCharacter(ch),
                 span: ctx.span.clone(),
                 file: ctx.file.map(|p| p.to_path_buf()),
             });
@@ -660,7 +656,7 @@ fn encode_command(
     if parts.len() < 2 {
         warnings.push(ErrorFormat {
             source: ctx.source.to_string(),
-            err_msg: format!("invalid command format '{command_str}'. Inserting null code."),
+            error: FormatError::InvalidCommandFormat(command_str.to_string()),
             span: ctx.span.clone(),
             file: ctx.file.map(|p| p.to_path_buf()),
         });
@@ -681,7 +677,10 @@ fn encode_command(
             let code = parse_hex_or_decimal(command_name) as u16;
             warnings.push(ErrorFormat {
                 source: ctx.source.to_string(),
-                err_msg: format!("unknown command name '{command_name}'. Using code 0x{code:04X}."),
+                error: FormatError::UnknownCommandName {
+                    name: command_name.to_string(),
+                    code,
+                },
                 span: ctx.span.clone(),
                 file: ctx.file.map(|p| p.to_path_buf()),
             });
@@ -742,7 +741,10 @@ fn encode_command_msgenc(
             let code = parse_hex_or_decimal(command_name) as u16;
             warnings.push(ErrorFormat {
                 source: ctx.source.to_string(),
-                err_msg: format!("unknown command name '{command_name}'. Using code 0x{code:04X}."),
+                error: FormatError::UnknownCommandName {
+                    name: command_name.to_string(),
+                    code,
+                },
                 span: ctx.span.clone(),
                 file: ctx.file.map(|p| p.to_path_buf()),
             });
@@ -804,7 +806,7 @@ fn encode_trainer_name(
         } else {
             warnings.push(ErrorFormat {
                 source: ctx.source.to_string(),
-                err_msg: format!("unknown character '{ch}' in trainer name. Using null code."),
+                error: FormatError::UnknownCharInTrainerName(ch),
                 span: ctx.span.clone(),
                 file: ctx.file.map(|p| p.to_path_buf()),
             });

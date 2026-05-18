@@ -5,6 +5,7 @@ use clap::{Args, CommandFactory, Parser, Subcommand};
 mod charmap;
 mod decode;
 mod encode;
+mod error;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
