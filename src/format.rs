@@ -243,7 +243,7 @@ pub fn line_is_too_long(
     Ok(measure_line_width(text, charmap, widths)?.1 > max_line_px)
 }
 
-/// Wrap dialogue text so no line exceeds `max_line_px`, inserting soft line
+/// Wraps dialogue text so no line exceeds `max_line_px`, inserting soft line
 /// breaks (`\n`) and box clears (`\r`) as needed.
 ///
 /// The view alternates between the two lines of the text box: a break on the
@@ -252,8 +252,8 @@ pub fn line_is_too_long(
 /// `\n` breaks already in the input — a hard `\n` reached while on the bottom
 /// line is realised as `\r`, because a literal line feed there would overflow
 /// the two-line box. Hard `\r` and `\f` breaks are emitted unchanged (they
-/// clear/scroll regardless of view position). Runs of spaces are preserved
-/// verbatim.
+/// clear/scroll regardless of view position). Clearing returns to the top row;
+/// scrolling leaves the current row unchanged. Runs of spaces are preserved verbatim.
 ///
 /// A trailing `\r` is appended (unless the text already ends in a hard break)
 /// so the message ends with a "press to continue" prompt.
@@ -293,7 +293,6 @@ pub fn word_wrap(
                     }
                     BreakKind::Scroll => {
                         result.push_str("\\f");
-                        view_slot = 0;
                     }
                 }
                 line_px = 0;
@@ -459,6 +458,25 @@ mod tests {
             word_wrap("a\\nb", cm, w, DIALOG_LINE_MAX_PX).unwrap(),
             "a\\nb\\r"
         );
+    }
+
+    /// Checks hard and automatic breaks after scrolling from either row.
+    #[test]
+    fn word_wrap_scroll_keeps_current_row() {
+        let cm = get_default_charmap();
+        let w = default_glyph_widths();
+        for (input, expected) in [
+            (r"a\nb\fc d", r"a\nb\fc\rd\r"),
+            (r"a\nb\fc\nd", r"a\nb\fc\rd\r"),
+            (r"a\nb\fc\fd e", r"a\nb\fc\fd\re\r"),
+            (r"a\fb c", r"a\fb\nc\r"),
+            (r"a\fb\nc", r"a\fb\nc\r"),
+            (r"a\nb\fc\rd e", r"a\nb\fc\rd\ne\r"),
+            (r"a\nb\fc d e", r"a\nb\fc\rd\ne\r"),
+            (r"a\nb\f", r"a\nb\f"),
+        ] {
+            assert_eq!(word_wrap(input, cm, w, 10).unwrap(), expected, "{input}");
+        }
     }
 
     #[test]
